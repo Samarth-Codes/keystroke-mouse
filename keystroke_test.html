@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Keystroke & Mouse Dynamics Auth Test</title>
+</head>
+<body>
+  <h2>Keystroke & Mouse Dynamics Auth Test</h2>
+  <p>Type the passphrase: <b>open sesame</b></p>
+  <input id="username" placeholder="Username" oninput="fetchExpectedFeatureCount()" />
+  <br><br>
+  <input id="passphrase" type="text" autocomplete="off" />
+  <br><br>
+  <button onclick="enroll()">Enroll</button>
+  <button onclick="authenticate()">Authenticate</button>
+  <p id="msg"></p>
+  <p id="expected_count_msg"></p>
+  <script>
+    const PASS = "open sesame";
+    let EXPECTED_FEATURE_COUNT = 27; // Will be updated from backend
+    let keyTimes = [];
+    let mouseMoves = [];
+    let mouseClicks = 0;
+    let typingStart = null;
+    let typingEnd = null;
+    let backspaceCount = 0;
+    let lastMouse = null;
+
+    async function fetchExpectedFeatureCount() {
+      const username = document.getElementById('username').value;
+      let url = '/expected_feature_count';
+      if (username) url += `?username=${encodeURIComponent(username)}`;
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        EXPECTED_FEATURE_COUNT = data.expected_feature_count;
+        document.getElementById('expected_count_msg').innerText = `Expected feature count: ${EXPECTED_FEATURE_COUNT}`;
+      } catch (e) {
+        document.getElementById('expected_count_msg').innerText = 'Could not fetch expected feature count.';
+      }
+    }
+
+    // Fetch on page load
+    fetchExpectedFeatureCount();
+
+    document.addEventListener('mousemove', function(e) {
+      if (!lastMouse) lastMouse = {x: e.clientX, y: e.clientY, t: performance.now()};
+      else {
+        const now = performance.now();
+        const dx = e.clientX - lastMouse.x;
+        const dy = e.clientY - lastMouse.y;
+        const dt = now - lastMouse.t;
+        mouseMoves.push({dx, dy, dt});
+        lastMouse = {x: e.clientX, y: e.clientY, t: now};
+      }
+    });
+    document.addEventListener('mousedown', function(e) {
+      mouseClicks++;
+    });
+
+    document.getElementById('passphrase').addEventListener('keydown', function(e) {
+      if (!typingStart) typingStart = performance.now();
+      if (e.key.length === 1) {
+        keyTimes.push({key: e.key, down: performance.now(), up: null});
+      }
+      if (e.key === 'Backspace') backspaceCount++;
+    });
+    document.getElementById('passphrase').addEventListener('keyup', function(e) {
+      typingEnd = performance.now();
+      let idx = keyTimes.findIndex(k => k.key === e.key && k.up === null);
+      if (idx !== -1) keyTimes[idx].up = performance.now();
+    });
+
+    function extractFeatures() {
+      const val = document.getElementById('passphrase').value;
+      if (val !== PASS) {
+        document.getElementById('msg').innerText = 'Passphrase incorrect!';
+        return null;
+      }
+      let holds = [], intervals = [];
+      for (let i = 0; i < keyTimes.length; ++i) {
+        if (keyTimes[i].up && keyTimes[i].down) {
+          holds.push(keyTimes[i].up - keyTimes[i].down);
+        }
+        if (i > 0 && keyTimes[i].down && keyTimes[i-1].down) {
+          intervals.push(keyTimes[i].down - keyTimes[i-1].down);
+        }
+      }
+      let typingDuration = typingEnd && typingStart ? (typingEnd - typingStart) : 1;
+      let typingSpeed = val.length / (typingDuration / 1000);
+      let totalDist = 0, totalTime = 0;
+      for (let m of mouseMoves) {
+        totalDist += Math.sqrt(m.dx*m.dx + m.dy*m.dy);
+        totalTime += m.dt;
+      }
+      let avgSpeed = totalTime > 0 ? totalDist / (totalTime / 1000) : 0;
+      let userAgent = navigator.userAgent;
+      let features = holds.concat(intervals);
+      features.push(typingSpeed);
+      features.push(backspaceCount);
+      features.push(avgSpeed);
+      features.push(totalDist);
+      features.push(mouseClicks);
+      let uaHash = 0;
+      for (let i = 0; i < userAgent.length; ++i) uaHash += userAgent.charCodeAt(i);
+      features.push(uaHash);
+      keyTimes = [];
+      mouseMoves = [];
+      mouseClicks = 0;
+      typingStart = null;
+      typingEnd = null;
+      backspaceCount = 0;
+      lastMouse = null;
+      return features;
+    }
+
+    function checkFeatureCount(feats) {
+      if (feats.length !== EXPECTED_FEATURE_COUNT) {
+        document.getElementById('msg').innerText = `Feature count mismatch! Expected ${EXPECTED_FEATURE_COUNT}, got ${feats.length}. Please type the passphrase exactly and try again.`;
+        document.getElementById('passphrase').value = '';
+        return false;
+      }
+      return true;
+    }
+
+    async function enroll() {
+      const username = document.getElementById('username').value;
+      const feats = extractFeatures();
+      if (!feats || !username) return;
+      if (!checkFeatureCount(feats)) return;
+      const res = await fetch('/enroll', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, features: feats})
+      });
+      const data = await res.json();
+      document.getElementById('msg').innerText = JSON.stringify(data) + '\nFeature count: ' + feats.length;
+      document.getElementById('passphrase').value = '';
+    }
+
+    async function authenticate() {
+      const username = document.getElementById('username').value;
+      const feats = extractFeatures();
+      if (!feats || !username) return;
+      if (!checkFeatureCount(feats)) return;
+      const res = await fetch('/authenticate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, features: feats})
+      });
+      const data = await res.json();
+      document.getElementById('msg').innerText = JSON.stringify(data) + '\nFeature count: ' + feats.length + (data.model_type ? ('\nModel: ' + data.model_type) : '');
+      document.getElementById('passphrase').value = '';
+    }
+  </script>
+</body>
+</html> 

@@ -1,0 +1,28 @@
+{
+  "chainer": {
+    "in": ["x"],
+    "out": ["y"],
+    "pipe": [
+      {
+        "class_name": "torch_transformers.GPT2TorchModel",
+        "pretrained_model_name_or_path": "sberbank-ai/rugpt3small_based_on_gpt2",
+        "max_length": 50,
+        "do_lower_case": false,
+        "tokenizer_load_path": null,
+        "vocab_file": null,
+        "config_file": null,
+        "weights_file": null,
+        "device": "cpu"
+      },
+      {
+        "class_name": "deeppavlov.core.models.component.Component",
+        "in": ["x"],
+        "out": ["y"]
+      }
+    ]
+  },
+  "metadata": {
+    "variables": {},
+    "download": []
+  }
+} 
