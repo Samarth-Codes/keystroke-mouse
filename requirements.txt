@@ -2,3 +2,5 @@ fastapi
 uvicorn
 deeppavlov
 pydantic 
+setuptools>=65.0
+wheel
