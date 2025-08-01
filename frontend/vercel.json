@@ -5,7 +5,11 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
+<<<<<<< HEAD
       "destination": "https://keystroke-auth-backend.onrender.com/$1"
+=======
+      "destination": "https://keystroke-auth-backend.onrender.com"
+>>>>>>> f64b6c022f97e588e0a97f560f5ff6e37f4f72aa
     }
   ]
 } 
