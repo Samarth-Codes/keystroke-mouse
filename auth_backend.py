@@ -18,10 +18,14 @@ from sklearn.metrics import f1_score
 
 app = FastAPI()
 
-# Allow CORS for all origins (for local testing)
+# Allow CORS for production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://your-frontend-domain.vercel.app",  # Replace with your Vercel domain
+        "http://localhost:5173",  # For local development
+        "http://localhost:3000",  # Alternative local port
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

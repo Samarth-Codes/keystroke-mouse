@@ -23,7 +23,7 @@ function App() {
 
   // Fetch expected feature count
   const fetchExpectedFeatureCount = async (user = username) => {
-    let url = '/expected_feature_count';
+    let url = '/api/expected_feature_count';
     if (user) url += `?username=${encodeURIComponent(user)}`;
     try {
       const res = await fetch(url);
@@ -145,7 +145,7 @@ function App() {
     const feats = extractFeatures();
     if (!feats || !username) { setLoading(false); return; }
     if (!checkFeatureCount(feats)) { setLoading(false); return; }
-    const res = await fetch('/enroll', {
+    const res = await fetch('/api/enroll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, features: feats })
@@ -163,7 +163,7 @@ function App() {
     const feats = extractFeatures();
     if (!feats || !username) { setLoading(false); return; }
     if (!checkFeatureCount(feats)) { setLoading(false); return; }
-    const res = await fetch('/authenticate', {
+    const res = await fetch('/api/authenticate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, features: feats })
