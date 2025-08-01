@@ -9,12 +9,9 @@ from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from datetime import datetime
-import json
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
+from database import DatabaseManager
 
 app = FastAPI()
 
@@ -22,38 +19,13 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://your-frontend-domain.vercel.app",  # Replace with your Vercel domain
+        "https://keystroke-mouse-7h4m.vercel.app",  # Your actual Vercel domain
         "http://localhost:5173",  # For local development
         "http://localhost:3000",  # Alternative local port
     ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- Database setup ---
-DATABASE_URL = "sqlite:///./auth.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    samples = relationship("Sample", back_populates="user")
-
-class Sample(Base):
-    __tablename__ = "samples"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    features = Column(String)  # JSON-encoded list
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User", back_populates="samples")
-
-Base.metadata.create_all(bind=engine)
-
-DATA_DIR = "user_models"
-os.makedirs(DATA_DIR, exist_ok=True)
 
 class KeystrokeSample(BaseModel):
     username: str
@@ -65,112 +37,175 @@ class AuthRequest(BaseModel):
 
 @app.post("/enroll")
 def enroll(sample: KeystrokeSample):
-    db = SessionLocal()
-    user = db.query(User).filter_by(username=sample.username).first()
-    if not user:
-        user = User(username=sample.username)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    db_sample = Sample(user_id=user.id, features=json.dumps(sample.features))
-    db.add(db_sample)
-    db.commit()
-    model_path = os.path.join(DATA_DIR, f"{sample.username}.pkl")
-    X, y = [], []
-    if os.path.exists(model_path):
-        with open(model_path, "rb") as f:
-            loaded = pickle.load(f)
-            if len(loaded) == 4:
-                model, X, y, prev_model_type = loaded
-            else:
-                model, X, y = loaded
-                prev_model_type = "rf"
-        expected_len = len(X[0])
-        if len(sample.features) != expected_len:
-            db.close()
-            raise HTTPException(
-                status_code=400,
-                detail=f"Feature length mismatch: expected {expected_len}, got {len(sample.features)}"
-            )
-    # Add real sample
-    X.append(sample.features)
-    y.append(1)
-    for _ in range(20):
-        X.append(list(np.array(sample.features) + np.random.normal(0, 0.03, len(sample.features))))
-        y.append(1)
-    for _ in range(3):
-        X.append(list(np.array(sample.features) + np.random.normal(0.2, 0.1, len(sample.features))))
-        y.append(0)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    models = {
-        "rf": RandomForestClassifier(n_estimators=100),
-        "svm": SVC(probability=True),
-        "mlp": MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=500)
-    }
-    best_model = None
-    best_type = None
-    best_score = -1
-    for mtype, m in models.items():
-        try:
-            m.fit(X_train, y_train)
-            preds = m.predict(X_test)
-            score = f1_score(y_test, preds)
-            if score > best_score:
-                best_score = score
-                best_model = m
-                best_type = mtype
-        except Exception as e:
-            continue
-    if best_model is None:
+    db = DatabaseManager()
+    try:
+        # Get or create user
+        user = db.get_user(sample.username)
+        if not user:
+            user = db.create_user(sample.username)
+        
+        # Save the sample
+        if not db.save_sample(user['id'], sample.features):
+            raise HTTPException(status_code=500, detail="Failed to save sample")
+        
+        # Get all samples for this user
+        all_samples = db.get_user_samples(user['id'])
+        
+        # Check if we have enough samples to train a model
+        if len(all_samples) < 1:
+            raise HTTPException(status_code=400, detail="Not enough samples to train model")
+        
+        # Prepare training data
+        X, y = [], []
+        
+        # Add real samples
+        for sample_features in all_samples:
+            if len(sample_features) == len(sample.features):  # Ensure consistent feature count
+                X.append(sample_features)
+                y.append(1)
+        
+        # Add synthetic positive samples (similar to real ones)
+        for _ in range(min(20, len(X))):  # Add up to 20 synthetic positive samples
+            if X:
+                base_sample = X[0]  # Use first sample as base
+                synthetic = list(np.array(base_sample) + np.random.normal(0, 0.03, len(base_sample)))
+                X.append(synthetic)
+                y.append(1)
+        
+        # Add synthetic negative samples
+        for _ in range(3):
+            if X:
+                base_sample = X[0]
+                synthetic = list(np.array(base_sample) + np.random.normal(0.2, 0.1, len(base_sample)))
+                X.append(synthetic)
+                y.append(0)
+        
+        if len(X) < 2:
+            raise HTTPException(status_code=400, detail="Not enough data to train model")
+        
+        # Train model
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+        
+        models = {
+            "rf": RandomForestClassifier(n_estimators=100),
+            "svm": SVC(probability=True),
+            "mlp": MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=500)
+        }
+        
+        best_model = None
+        best_type = None
+        best_score = -1
+        
+        for mtype, m in models.items():
+            try:
+                m.fit(X_train, y_train)
+                preds = m.predict(X_test)
+                score = f1_score(y_test, preds)
+                if score > best_score:
+                    best_score = score
+                    best_model = m
+                    best_type = mtype
+            except Exception as e:
+                print(f"Model {mtype} failed: {e}")
+                continue
+        
+        if best_model is None:
+            raise HTTPException(status_code=500, detail="Model training failed for all models.")
+        
+        # Save the model
+        model_bytes = pickle.dumps(best_model)
+        if not db.save_model(sample.username, model_bytes, best_type, len(sample.features)):
+            raise HTTPException(status_code=500, detail="Failed to save model")
+        
+        return {
+            "status": "enrolled", 
+            "model_type": best_type, 
+            "f1_score": best_score,
+            "samples_count": len(all_samples)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Enrollment error: {e}")
+        raise HTTPException(status_code=500, detail=f"Enrollment failed: {str(e)}")
+    finally:
         db.close()
-        raise HTTPException(status_code=500, detail="Model training failed for all models.")
-    with open(model_path, "wb") as f:
-        pickle.dump((best_model, X, y, best_type), f)
-    db.close()
-    return {"status": "enrolled", "model_type": best_type, "f1_score": best_score}
 
 @app.post("/authenticate")
 def authenticate(req: AuthRequest):
-    model_path = os.path.join(DATA_DIR, f"{req.username}.pkl")
-    if not os.path.exists(model_path):
-        raise HTTPException(status_code=404, detail="User not enrolled")
-    with open(model_path, "rb") as f:
-        model, X, y, model_type = pickle.load(f)
-    expected_len = len(X[0])
-    if len(req.features) != expected_len:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Feature length mismatch: expected {expected_len}, got {len(req.features)}"
-        )
-    proba = float(model.predict_proba([req.features])[0][1])
-    is_genuine = bool(proba > 0.5)
-    return {"authenticated": is_genuine, "confidence": proba, "model_type": model_type}
+    db = DatabaseManager()
+    try:
+        # Get user
+        user = db.get_user(req.username)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not enrolled")
+        
+        # Get model
+        model_data = db.get_model(req.username)
+        if not model_data:
+            raise HTTPException(status_code=404, detail="User model not found")
+        
+        model_bytes, model_type, expected_len = model_data
+        model = pickle.loads(model_bytes)
+        
+        if len(req.features) != expected_len:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Feature length mismatch: expected {expected_len}, got {len(req.features)}"
+            )
+        
+        # Predict
+        try:
+            proba = float(model.predict_proba([req.features])[0][1])
+            is_genuine = bool(proba > 0.5)
+            return {
+                "authenticated": is_genuine, 
+                "confidence": proba, 
+                "model_type": model_type
+            }
+        except Exception as e:
+            print(f"Prediction error: {e}")
+            raise HTTPException(status_code=500, detail="Model prediction failed")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Authentication error: {e}")
+        raise HTTPException(status_code=500, detail=f"Authentication failed: {str(e)}")
+    finally:
+        db.close()
 
 @app.get("/users")
 def list_users():
-    db = SessionLocal()
-    users = db.query(User).all()
-    result = []
-    for user in users:
-        count = db.query(Sample).filter_by(user_id=user.id).count()
-        result.append({"username": user.username, "enrollments": count})
-    db.close()
-    return result
+    db = DatabaseManager()
+    try:
+        return db.get_all_users()
+    except Exception as e:
+        print(f"Error listing users: {e}")
+        return []
+    finally:
+        db.close()
 
 @app.get("/expected_feature_count")
 def expected_feature_count(username: str = None):
-    if username:
-        model_path = os.path.join(DATA_DIR, f"{username}.pkl")
-        if os.path.exists(model_path):
-            with open(model_path, "rb") as f:
-                loaded = pickle.load(f)
-                if len(loaded) == 4:
-                    _, X, _, _ = loaded
-                else:
-                    _, X, _ = loaded
-                return {"expected_feature_count": len(X[0])}
-    # Default value if no user or model
-    return {"expected_feature_count": 27}
+    if not username:
+        return {"expected_feature_count": 27}
+    
+    db = DatabaseManager()
+    try:
+        model_data = db.get_model(username)
+        if model_data:
+            _, _, feature_count = model_data
+            return {"expected_feature_count": feature_count}
+        
+        # Default value if no user or model
+        return {"expected_feature_count": 27}
+    except Exception as e:
+        print(f"Error getting feature count: {e}")
+        return {"expected_feature_count": 27}
+    finally:
+        db.close()
 
 # Mount static files at the end, after all API routes
 app.mount("/", StaticFiles(directory=".", html=True), name="static") 

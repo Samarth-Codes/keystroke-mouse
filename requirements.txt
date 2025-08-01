@@ -8,3 +8,5 @@ python-multipart
 aiofiles
 setuptools
 wheel
+psycopg2-binary
+asyncpg
