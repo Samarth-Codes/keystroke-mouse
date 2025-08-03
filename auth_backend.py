@@ -208,4 +208,8 @@ def expected_feature_count(username: str = None):
         db.close()
 
 # Mount static files at the end, after all API routes
-app.mount("/", StaticFiles(directory=".", html=True), name="static") 
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

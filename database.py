@@ -31,7 +31,7 @@ class Sample(Base):
     __tablename__ = "samples"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer)
-    features_json = Column(Text)  # JSON-encoded features
+    features = Column(String)  # JSON-encoded features (keeping existing column name)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 class Model(Base):
@@ -86,7 +86,7 @@ class DatabaseManager:
         """Save a keystroke sample."""
         try:
             features_json = json.dumps(features)
-            sample = Sample(user_id=user_id, features_json=features_json)
+            sample = Sample(user_id=user_id, features=features_json)
             self.db.add(sample)
             self.db.commit()
             return True
@@ -102,7 +102,7 @@ class DatabaseManager:
             result = []
             for sample in samples:
                 try:
-                    features = json.loads(sample.features_json)
+                    features = json.loads(sample.features)
                     result.append(features)
                 except:
                     continue
